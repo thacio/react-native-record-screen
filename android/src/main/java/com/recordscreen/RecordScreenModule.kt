@@ -4,7 +4,11 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.media.MediaCodec
 import android.media.MediaCodecList
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.util.SparseIntArray
@@ -15,6 +19,7 @@ import com.hbisoft.hbrecorder.HBRecorder
 import com.hbisoft.hbrecorder.HBRecorderListener
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
 import kotlin.math.ceil
 
 class RecordScreenModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext), HBRecorderListener {
@@ -23,6 +28,7 @@ class RecordScreenModule(reactContext: ReactApplicationContext) : ReactContextBa
   private var screenWidth: Number = 0;
   private var screenHeight: Number = 0;
   private var mic: Boolean = true;
+  private var audioOnly: Boolean = false;
   private var currentVersion: String = "";
   private var outputUri: File? = null;
   private var startPromise: Promise? = null;
@@ -71,6 +77,7 @@ class RecordScreenModule(reactContext: ReactApplicationContext) : ReactContextBa
     screenWidth = if (readableMap.hasKey("width")) ceil(readableMap.getDouble("width")).toInt() else 0;
     screenHeight = if (readableMap.hasKey("height")) ceil(readableMap.getDouble("height")).toInt() else 0;
     mic =  if (readableMap.hasKey("mic")) readableMap.getBoolean("mic") else true;
+    audioOnly = if (readableMap.hasKey("audioOnly")) readableMap.getBoolean("audioOnly") else false;
 
     hbRecorder = HBRecorder(reactApplicationContext, this);
     hbRecorder!!.setOutputPath(outputUri.toString());
@@ -142,13 +149,105 @@ class RecordScreenModule(reactContext: ReactApplicationContext) : ReactContextBa
   override fun HBRecorderOnComplete() {
     println("HBRecorderOnComplete")
     if (stopPromise != null) {
-      val uri = hbRecorder!!.filePath;
-      val response = WritableNativeMap();
-      val result = WritableNativeMap();
-      result.putString("outputURL", uri);
-      response.putString("status", "success");
-      response.putMap("result", result);
-      stopPromise!!.resolve(response);
+      val videoUri = hbRecorder!!.filePath;
+      
+      if (audioOnly) {
+        // Extract audio from video
+        val audioUri = extractAudioFromVideo(videoUri);
+        if (audioUri != null) {
+          // Delete original video file
+          File(videoUri).delete();
+          
+          val response = WritableNativeMap();
+          val result = WritableNativeMap();
+          result.putString("outputURL", audioUri);
+          response.putString("status", "success");
+          response.putMap("result", result);
+          stopPromise!!.resolve(response);
+        } else {
+          stopPromise!!.reject("500", "Failed to extract audio");
+        }
+      } else {
+        // Return video as before
+        val response = WritableNativeMap();
+        val result = WritableNativeMap();
+        result.putString("outputURL", videoUri);
+        response.putString("status", "success");
+        response.putMap("result", result);
+        stopPromise!!.resolve(response);
+      }
+    }
+  }
+
+  private fun extractAudioFromVideo(videoPath: String): String? {
+    try {
+      // Create output file path for audio
+      val audioFileName = videoPath.replace(".mp4", ".m4a");
+      
+      // Initialize MediaExtractor
+      val extractor = MediaExtractor();
+      extractor.setDataSource(videoPath);
+      
+      // Find audio track
+      var audioTrackIndex = -1;
+      var audioFormat: MediaFormat? = null;
+      
+      for (i in 0 until extractor.trackCount) {
+        val format = extractor.getTrackFormat(i);
+        val mime = format.getString(MediaFormat.KEY_MIME);
+        if (mime != null && mime.startsWith("audio/")) {
+          audioTrackIndex = i;
+          audioFormat = format;
+          break;
+        }
+      }
+      
+      if (audioTrackIndex == -1 || audioFormat == null) {
+        println("No audio track found");
+        return null;
+      }
+      
+      // Select the audio track
+      extractor.selectTrack(audioTrackIndex);
+      
+      // Create MediaMuxer for output
+      val muxer = MediaMuxer(audioFileName, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+      val outputAudioTrack = muxer.addTrack(audioFormat);
+      muxer.start();
+      
+      // Allocate buffer
+      // val bufferSize = audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 100 * 1024);
+      val bufferSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) else 100 * 1024
+      val buffer = ByteBuffer.allocate(bufferSize);
+      val bufferInfo = MediaCodec.BufferInfo();
+      
+      // Extract and write audio samples
+      while (true) {
+        val sampleSize = extractor.readSampleData(buffer, 0);
+        if (sampleSize < 0) {
+          break;
+        }
+        
+        bufferInfo.offset = 0;
+        bufferInfo.size = sampleSize;
+        bufferInfo.presentationTimeUs = extractor.sampleTime;
+        bufferInfo.flags = extractor.sampleFlags;
+        
+        muxer.writeSampleData(outputAudioTrack, buffer, bufferInfo);
+        extractor.advance();
+      }
+      
+      // Clean up
+      muxer.stop();
+      muxer.release();
+      extractor.release();
+      
+      return audioFileName;
+      
+    } catch (e: Exception) {
+      println("Error extracting audio: ${e.message}");
+      e.printStackTrace();
+      return null;
     }
   }
 

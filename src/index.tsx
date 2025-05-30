@@ -12,12 +12,14 @@ export type RecordScreenConfigType = {
   fps?: number;
   bitrate?: number;
   mic?: boolean;
+  audioOnly?: boolean;
 };
 
 export type RecordingSuccessResponse = {
   status: 'success';
   result: {
     outputURL: string;
+    audioURL?: string; // Optional audio URL when recording video
   };
 };
 
@@ -48,6 +50,7 @@ class ReactNativeRecordScreenClass {
     const { width, height } = Dimensions.get('window');
     RS.setup({
       mic: true,
+      audioOnly: false,
       width,
       height,
       fps: 60,
