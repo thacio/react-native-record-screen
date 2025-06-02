@@ -1,3 +1,5 @@
+// ios/RecordScreen.h
+
 #import <React/RCTBridgeModule.h>
 #import <ReplayKit/ReplayKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -14,11 +16,14 @@
     @property (assign, nonatomic) BOOL audioOnly;
     @property (assign, nonatomic) int fps;
     @property (assign, nonatomic) int bitrate;
+    @property (assign, nonatomic) BOOL useBroadcast;
 
     @property (nonatomic) AVAssetWriter *writer;
     @property BOOL encounteredFirstBuffer;
     @property CMSampleBufferRef afterAppBackgroundAudioSampleBuffer;
     @property CMSampleBufferRef afterAppBackgroundMicSampleBuffer;
     @property CMSampleBufferRef afterAppBackgroundVideoSampleBuffer;
+    
+    @property (strong, nonatomic) RPSystemBroadcastPickerView *broadcastPicker;
 
 @end
