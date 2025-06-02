@@ -1,3 +1,4 @@
+// src/index.tsx
 import { NativeModules, Dimensions } from 'react-native';
 
 export const RecordingResult = {
@@ -13,6 +14,7 @@ export type RecordScreenConfigType = {
   bitrate?: number;
   mic?: boolean;
   audioOnly?: boolean;
+  broadcast: true
 };
 
 export type RecordingSuccessResponse = {
