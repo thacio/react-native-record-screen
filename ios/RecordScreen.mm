@@ -1,3 +1,5 @@
+// ios/RecordScreen.mm
+
 #import "RecordScreen.h"
 #import <React/RCTConvert.h>
 
@@ -61,10 +63,103 @@ RCT_EXPORT_METHOD(setup: (NSDictionary *)config)
     self.bitrate = [RCTConvert int: config[@"bitrate"]];
     self.fps = [RCTConvert int: config[@"fps"]];
     self.audioOnly = config[@"audioOnly"] ? [RCTConvert BOOL: config[@"audioOnly"]] : NO;
+    self.useBroadcast = config[@"broadcast"] ? [RCTConvert BOOL: config[@"broadcast"]] : NO;
+}
+
+RCT_EXPORT_METHOD(startBroadcastRecording: (RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (@available(iOS 12.0, *)) {
+            // Get the root view controller
+            UIViewController *rootViewController = nil;
+            UIWindow *window = [UIApplication sharedApplication].keyWindow;
+            
+            // Try to find the topmost view controller
+            if (window) {
+                rootViewController = window.rootViewController;
+                while (rootViewController.presentedViewController) {
+                    rootViewController = rootViewController.presentedViewController;
+                }
+            }
+            
+            if (!rootViewController) {
+                // Fallback: try to get any available window
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    if (w.rootViewController) {
+                        rootViewController = w.rootViewController;
+                        break;
+                    }
+                }
+            }
+            
+            if (!rootViewController) {
+                reject(@"no_root_view", @"Could not find root view controller", nil);
+                return;
+            }
+            
+            // Create the broadcast picker
+            self.broadcastPicker = [[RPSystemBroadcastPickerView alloc] initWithFrame:CGRectMake(0, 0, 60, 60)];
+            
+            // Set preferred extension to nil to use system's Photos recorder
+            self.broadcastPicker.preferredExtension = nil;
+            self.broadcastPicker.showsMicrophoneButton = self.enableMic;
+            
+            // Add it to the view hierarchy (invisible)
+            self.broadcastPicker.alpha = 0.01;
+            [rootViewController.view addSubview:self.broadcastPicker];
+            
+            // Programmatically trigger the picker
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                BOOL buttonFound = NO;
+                for (UIView *subview in self.broadcastPicker.subviews) {
+                    if ([subview isKindOfClass:[UIButton class]]) {
+                        UIButton *button = (UIButton *)subview;
+                        [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        buttonFound = YES;
+                        break;
+                    }
+                }
+                
+                if (!buttonFound) {
+                    [self.broadcastPicker removeFromSuperview];
+                    self.broadcastPicker = nil;
+                    reject(@"button_not_found", @"Could not find broadcast button", nil);
+                    return;
+                }
+                
+                // Clean up the picker after a delay
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self.broadcastPicker removeFromSuperview];
+                    self.broadcastPicker = nil;
+                });
+                
+                resolve(@{
+                    @"status": @"broadcast_picker_shown",
+                    @"message": @"System broadcast picker presented. User must tap 'Start Recording' and stop from Control Center."
+                });
+            });
+        } else {
+            reject(@"not_available", @"System broadcast recording requires iOS 12.0 or later", nil);
+        }
+    });
+}
+
+RCT_EXPORT_METHOD(isBroadcasting:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject)
+{
+    // Note: There's no direct API to check if system broadcast is active
+    // This is a limitation of the broadcast approach
+    resolve(@{@"broadcasting": @NO, @"message": @"Cannot determine broadcast status. Check for red status bar indicator."});
 }
 
 RCT_REMAP_METHOD(startRecording, resolve:(RCTPromiseResolveBlock)resolve rejecte:(RCTPromiseRejectBlock)reject)
 {
+    // If broadcast mode is enabled, use the broadcast picker instead
+    if (self.useBroadcast) {
+        [self startBroadcastRecording:resolve reject:reject];
+        return;
+    }
+    
+    // Otherwise, continue with the existing in-app recording code
     UIApplication *app = [UIApplication sharedApplication];
     _backgroundRenderingID = [app beginBackgroundTaskWithExpirationHandler:^{
         [app endBackgroundTask:_backgroundRenderingID];
@@ -95,9 +190,11 @@ RCT_REMAP_METHOD(startRecording, resolve:(RCTPromiseResolveBlock)resolve rejecte
     AudioChannelLayout acl = { 0 };
     acl.mChannelLayoutTag = kAudioChannelLayoutTag_Mono;
     self.audioInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:@{ AVFormatIDKey: @(kAudioFormatMPEG4AAC), AVSampleRateKey: @(44100),  AVChannelLayoutKey: [NSData dataWithBytes: &acl length: sizeof( acl ) ], AVEncoderBitRateKey: @(64000)}];
+    self.audioInput.expectsMediaDataInRealTime = YES;
     self.micInput = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:@{ AVFormatIDKey: @(kAudioFormatMPEG4AAC), AVSampleRateKey: @(44100),  AVChannelLayoutKey: [NSData dataWithBytes: &acl length: sizeof( acl ) ], AVEncoderBitRateKey: @(64000)}];
+    self.micInput.expectsMediaDataInRealTime   = YES;
 
-    self.audioInput.preferredVolume = 0.0;
+    self.audioInput.preferredVolume = 1.0;
     self.micInput.preferredVolume = 0.0;
 
     [self.writer addInput:self.audioInput];
@@ -219,9 +316,6 @@ RCT_REMAP_METHOD(startRecording, resolve:(RCTPromiseResolveBlock)resolve rejecte
                                         break;
                                     case RPSampleBufferTypeAudioApp:
                                         if (self.audioInput.isReadyForMoreMediaData) {
-                                            if(!self.enableMic){
-                                                [self muteAudioInBuffer:sampleBuffer];
-                                            }
                                             [self.audioInput appendSampleBuffer:sampleBuffer];
                                         }
                                         break;
